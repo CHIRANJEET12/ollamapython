@@ -1,55 +1,61 @@
 from langchain_community.document_loaders import PyPDFLoader,PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Chroma
+from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import OllamaEmbeddings
 from langchain_community.llms import Ollama
 from langchain_core.prompts import ChatPromptTemplate
 import os
+import pickle
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.chains import create_retrieval_chain
 
 
 llm_model = "llama3.2:1b"
-embedding_model = "mxbai-embed-large"
+embedding_model = "nomic-embed-text"
 PERSIST_DIR="db"
+FAISS_INDEX_PATH = "faiss.index"
+FAISS_STORE_PATH = "faiss_store.pkl"
 
 def create_vector_store(file_path):
 
 
-    if os.path.exists(PERSIST_DIR):
-        print("🔄 Loading existing ChromaDB...")
-        return Chroma(
-            persist_directory=PERSIST_DIR,
-            embedding_function=OllamaEmbeddings(model=embedding_model)
+    if os.path.exists(FAISS_INDEX_PATH) and os.path.exists(FAISS_STORE_PATH):
+        print("🔄 Loading existing FAISS vector store...")
+        with open(FAISS_STORE_PATH,"rb") as f:
+            stored = pickle.load(f)
+        faiss_store = FAISS.load_local(
+            FAISS_INDEX_PATH,
+            stored["embedding"],
+            allow_dangerous_deserialization=True
         )
+        return faiss_store
     
-    print("⚡ Creating new ChromaDB... Processing PDF...")
+    print("⚡ Creating new FAISS vector store... Processing PDF...")
 
 
     loader = PyMuPDFLoader(file_path)
     docs = loader.load()
 
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=800,   # smaller chunks -> faster embedding
-        chunk_overlap=200 # reduce overlap
+        chunk_size=1500,
+        chunk_overlap=100
     )
-    splits = text_splitter.split_documents(docs)
+    chunks = text_splitter.split_documents(docs)
 
     embeddings = OllamaEmbeddings(model=embedding_model)
 
-    vector_store = Chroma.from_documents(
-        documents=splits,
-        embedding=embeddings,
-        persist_directory=PERSIST_DIR,
-    )
+    faiss_store = FAISS.from_documents(chunks, embeddings)
 
-    vector_store.persist()
-    print("✔ ChromaDB created and saved.")
+    faiss_store.save_local(FAISS_INDEX_PATH)
+    with open(FAISS_STORE_PATH,"wb") as f:
+        pickle.dump({"embedding":embeddings},f)
 
-    return vector_store
+    print("✔ FAISS index saved.")
+
+    return faiss_store
 
 def create_rag_chain(vector_store):
-    llm = Ollama(model=llm_model)
+    llm = Ollama(model="llama3.2:1b")
 
 
     prompt = ChatPromptTemplate.from_template("""
